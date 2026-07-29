@@ -9,7 +9,9 @@
 
            irm https://raw.githubusercontent.com/mickeyperry/pdf-to-ae/main/install.ps1 | iex
 
-    2. Local (you cloned or unzipped the repo) - installs in place:
+    2. Local (you cloned or unzipped the repo) - the files are copied to that
+       same folder and installed from there, so the menu keeps working after you
+       delete the download. Add -InPlace to register the copy you are sitting in:
 
            powershell -ExecutionPolicy Bypass -File .\install.ps1
 
@@ -22,7 +24,12 @@ param(
     [string] $InstallDir = (Join-Path $env:LOCALAPPDATA 'Programs\pdf-to-ae'),
 
     # Skip the Poppler check (useful if you installed it some other way).
-    [switch] $SkipPoppler
+    [switch] $SkipPoppler,
+
+    # Register the scripts where they already sit instead of copying them to
+    # $InstallDir. For working on a clone - see Copy-RepoLocal for why the copy
+    # is the default.
+    [switch] $InPlace
 )
 
 $ErrorActionPreference = 'Stop'
@@ -47,37 +54,47 @@ function Write-Bad  { param([string]$T) Write-Host "  $T" -ForegroundColor Red }
 
 # ---------------------------------------------------------------- poppler ----
 
-function Test-Poppler {
-    if (Get-Command 'pdftocairo.exe' -ErrorAction SilentlyContinue) { return $true }
-    $pkgRoot = Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Packages'
-    if (Test-Path $pkgRoot) {
-        $hit = Get-ChildItem $pkgRoot -Recurse -Filter 'pdftocairo.exe' -ErrorAction SilentlyContinue |
-               Select-Object -First 1
-        if ($hit) { return $true }
-    }
-    return $false
-}
-
 function Install-Poppler {
-    if (Test-Poppler) {
-        Write-Ok 'Poppler already installed.'
+    param([string] $SourceRoot)
+
+    # One shared search list for installer and worker, so they can never disagree
+    # about whether this machine already has a usable Poppler.
+    . (Join-Path $SourceRoot 'src\poppler.ps1')
+
+    $bin = Resolve-PopplerBin
+    if ($bin) {
+        Write-Ok "Poppler already installed."
+        Write-Note "  $bin"
         return
     }
+
     Write-Step 'Installing Poppler (the PDF rendering engine)...'
 
-    if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
-        Write-Bad 'winget was not found, so Poppler cannot be installed automatically.'
-        Write-Note 'Install Poppler manually from:'
+    if (Get-Command winget -ErrorAction SilentlyContinue) {
+        $bin = Install-PopplerViaWinget
+        if ($bin) {
+            Write-Ok 'Poppler installed via winget.'
+            return
+        }
+        Write-Note 'winget did not produce a working Poppler; downloading it directly instead.'
+    } else {
+        Write-Note 'No winget on this machine; downloading Poppler directly instead.'
+    }
+
+    # Works on LTSC, Server and un-updated Windows 10, where winget is absent.
+    try {
+        $bin = Install-PopplerFromGitHub
+    } catch {
+        Write-Bad "Could not download Poppler: $($_.Exception.Message)"
+        Write-Note 'Install it by hand from:'
         Write-Note '  https://github.com/oschwartz10612/poppler-windows/releases'
         Write-Note 'then add its Library\bin folder to PATH and re-run this installer.'
         throw 'Poppler is required.'
     }
 
-    & winget install --id oschwartz10612.Poppler `
-        --accept-package-agreements --accept-source-agreements --disable-interactivity | Out-Null
-
-    if (-not (Test-Poppler)) { throw 'Poppler install did not complete. Try running it by hand: winget install --id oschwartz10612.Poppler' }
-    Write-Ok 'Poppler installed.'
+    if (-not $bin) { throw 'Poppler was downloaded but no usable bin folder was found inside it.' }
+    Write-Ok 'Poppler downloaded.'
+    Write-Note "  $bin"
 }
 
 # ------------------------------------------------------------- get source ----
@@ -93,6 +110,48 @@ function Get-LocalRoot {
         return $here
     }
     return $null
+}
+
+function Test-SamePath {
+    param([string] $A, [string] $B)
+    if (-not $A -or -not $B) { return $false }
+    $norm = { param($p) $p.TrimEnd('\', '/').ToLowerInvariant() }
+    return ((& $norm $A) -eq (& $norm $B))
+}
+
+# Copy a local checkout into the per-user install folder. The registry stores an
+# absolute path to the worker, so registering it where it was unzipped (Downloads,
+# a USB stick, a network share) means the menu breaks silently the day that folder
+# moves. Installing from a fixed location under LOCALAPPDATA removes that whole
+# class of failure.
+function Copy-RepoLocal {
+    param([string] $Source, [string] $Destination)
+
+    Write-Step "Copying to $Destination..."
+
+    if (Test-Path -LiteralPath $Destination) {
+        # Keep a downloaded Poppler: it lives under the install folder and is big.
+        $keep = Join-Path $Destination 'poppler'
+        $stash = $null
+        if (Test-Path -LiteralPath $keep) {
+            $stash = Join-Path ([System.IO.Path]::GetTempPath()) ("poppler_keep_" + [Guid]::NewGuid().ToString('N'))
+            Move-Item -LiteralPath $keep -Destination $stash -Force
+        }
+        Remove-Item -LiteralPath $Destination -Recurse -Force
+        [System.IO.Directory]::CreateDirectory($Destination) | Out-Null
+        if ($stash) { Move-Item -LiteralPath $stash -Destination $keep -Force }
+    } else {
+        [System.IO.Directory]::CreateDirectory($Destination) | Out-Null
+    }
+
+    Get-ChildItem -LiteralPath $Source -Force |
+        Where-Object { $_.Name -notin @('.git', '.github') } |
+        ForEach-Object {
+            Copy-Item -LiteralPath $_.FullName -Destination $Destination -Recurse -Force
+        }
+
+    Write-Ok "Installed to $Destination"
+    return $Destination
 }
 
 function Get-RepoFromWeb {
@@ -137,14 +196,19 @@ function Get-RepoFromWeb {
 Write-Head
 
 try {
-    $root = Get-LocalRoot
-    if ($root) {
-        Write-Ok "Using the copy in $root"
+    $local = Get-LocalRoot
+    if ($local) {
+        if ($InPlace -or (Test-SamePath $local $InstallDir)) {
+            Write-Ok "Using the copy in $local"
+            $root = $local
+        } else {
+            $root = Copy-RepoLocal -Source $local -Destination $InstallDir
+        }
     } else {
         $root = Get-RepoFromWeb -Destination $InstallDir
     }
 
-    if (-not $SkipPoppler) { Install-Poppler }
+    if (-not $SkipPoppler) { Install-Poppler -SourceRoot $root }
 
     Write-Step 'Registering the right-click menu...'
     $register = Join-Path $root 'src\install-context-menu.ps1'

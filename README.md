@@ -23,9 +23,15 @@ irm https://raw.githubusercontent.com/mickeyperry/pdf-to-ae/main/install.ps1 | i
 
 Or download / clone the repo and double-click **`Install.cmd`**.
 
-Either way it is a per-user install — no admin rights, nothing written outside
-`HKCU` and your own profile. [Poppler](https://github.com/oschwartz10612/poppler-windows)
-is fetched automatically via winget if you don't already have it.
+Either way the files end up in `%LOCALAPPDATA%\Programs\pdf-to-ae` and the menu
+points there — so it keeps working after you delete the download. (Working on a
+clone? `install.ps1 -InPlace` registers the copy you're sitting in instead.)
+
+It is a per-user install — no admin rights, nothing written outside `HKCU` and
+your own profile. [Poppler](https://github.com/oschwartz10612/poppler-windows) is
+fetched automatically if you don't already have it: via winget where that exists,
+otherwise downloaded straight from its GitHub releases into the install folder.
+Re-running the installer is safe and keeps the Poppler it already fetched.
 
 ## Use
 
@@ -80,7 +86,7 @@ need to scale up — otherwise reach for the vector option.
 
 ## Uninstall
 
-Double-click **`Uninstall.cmd`**, or run:
+Double-click **`Uninstall.cmd`** in `%LOCALAPPDATA%\Programs\pdf-to-ae`, or run:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\src\uninstall-context-menu.ps1
@@ -101,6 +107,7 @@ Poppler and the script files stay on disk; remove them yourself if you want them
 |---|---|
 | `install.ps1` | Dual-mode installer — web one-liner or local. Fetches Poppler if needed. |
 | `src\pdf-to-ae.ps1` | The worker. Renders one page at a time so progress is real and filenames are exact. |
+| `src\poppler.ps1` | Shared Poppler discovery and bootstrap, so installer and worker never disagree about whether Poppler is present. |
 | `src\install-context-menu.ps1` | Writes the cascading submenu into `HKCU`. |
 | `src\uninstall-context-menu.ps1` | Removes it. |
 

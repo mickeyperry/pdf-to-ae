@@ -55,29 +55,18 @@ function Stop-WithError {
     exit 1
 }
 
-# Locate the Poppler bin folder. PATH first, then the winget shim, then the
-# versioned winget package folder (which changes whenever Poppler updates).
-function Resolve-PopplerBin {
-    $probe = Get-Command 'pdftocairo.exe' -ErrorAction SilentlyContinue
-    if ($probe -and $probe.Source) {
-        $dir = Split-Path -Parent $probe.Source
-        if (Test-Path (Join-Path $dir 'pdfinfo.exe')) { return $dir }
-    }
+# Explorer gives this script a console window and takes it away the moment the
+# script ends, so an unhandled error is invisible - the window just blinks. This
+# trap turns any error we did not anticipate into a message that waits for a key.
+trap { Stop-WithError "  Unexpected error: $($_.Exception.Message)" }
 
-    $roots = @(
-        (Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Packages'),
-        (Join-Path $env:ProgramFiles 'poppler'),
-        'C:\poppler'
-    )
-    foreach ($root in $roots) {
-        if (-not (Test-Path $root)) { continue }
-        $hit = Get-ChildItem -Path $root -Recurse -Filter 'pdftocairo.exe' -ErrorAction SilentlyContinue |
-               Sort-Object FullName -Descending |
-               Select-Object -First 1
-        if ($hit) { return $hit.DirectoryName }
-    }
-    return $null
+# Poppler discovery lives in poppler.ps1 so the installer and this script always
+# agree about what counts as an installed Poppler.
+$popplerLib = Join-Path $PSScriptRoot 'poppler.ps1'
+if (-not (Test-Path -LiteralPath $popplerLib)) {
+    Stop-WithError "  Broken install: $popplerLib is missing. Re-run the installer."
 }
+. $popplerLib
 
 # Start-Process does not quote arguments, so any path containing a space would be
 # split into several arguments. Quote anything that needs it.
@@ -288,10 +277,13 @@ if ($pdfItem.Extension -notmatch '^\.pdf$') {
 $bin = Resolve-PopplerBin
 if (-not $bin) {
     Stop-WithError @"
-Poppler was not found.
+  Poppler (the PDF rendering engine) was not found.
 
-Install it with:
-    winget install --id oschwartz10612.Poppler
+  Re-run the installer to fetch it:
+      irm https://raw.githubusercontent.com/mickeyperry/pdf-to-ae/main/install.ps1 | iex
+
+  Or install it yourself:
+      winget install --id oschwartz10612.Poppler
 "@
 }
 $pdftocairo   = Join-Path $bin 'pdftocairo.exe'
