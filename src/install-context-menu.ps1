@@ -40,11 +40,24 @@ $MenuKey = "HKCU:\Software\Classes\$MenuId"
 if (-not (Test-Path -LiteralPath $ScriptPath)) {
     throw "Worker script not found: $ScriptPath"
 }
-$ScriptPath = (Resolve-Path -LiteralPath $ScriptPath).Path
+# .ProviderPath, not .Path: for a UNC or mapped location .Path comes back
+# provider-qualified ("Microsoft.PowerShell.Core\FileSystem::\\host\share\..."),
+# and powershell.exe -File cannot open that - the console window opened by
+# Explorer would close instantly with no message.
+$ScriptPath = (Resolve-Path -LiteralPath $ScriptPath).ProviderPath
+
+if ($ScriptPath -notmatch '^([A-Za-z]:\\|\\\\)') {
+    throw "Refusing to register a path Explorer cannot launch: $ScriptPath"
+}
 
 # Pick an icon for the menu: After Effects if it is installed, else a generic one.
+# ProgramW6432 is checked first because a 32-bit PowerShell reports the x86 folder
+# in ProgramFiles, where After Effects is not.
 $icon = "$env:SystemRoot\System32\imageres.dll,-68"
-$aeCandidates = Get-ChildItem -Path (Join-Path $env:ProgramFiles 'Adobe') -Directory -ErrorAction SilentlyContinue |
+$adobeRoots = @($env:ProgramW6432, $env:ProgramFiles, ${env:ProgramFiles(x86)}) |
+              Where-Object { $_ } | Select-Object -Unique |
+              ForEach-Object { Join-Path $_ 'Adobe' }
+$aeCandidates = Get-ChildItem -Path $adobeRoots -Directory -ErrorAction SilentlyContinue |
                 Where-Object { $_.Name -like 'Adobe After Effects*' } |
                 Sort-Object Name -Descending
 foreach ($dir in $aeCandidates) {
@@ -52,11 +65,16 @@ foreach ($dir in $aeCandidates) {
     if (Test-Path -LiteralPath $exe) { $icon = "$exe,0"; break }
 }
 
+# Explorer runs this command as a 64-bit process, so the literal System32 path is
+# the right one to write. Fall back to the bare name if that copy is missing.
 $psExe = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+if (-not (Test-Path -LiteralPath $psExe)) { $psExe = 'powershell.exe' }
 
 function New-Command {
     param([string] $Tail)
-    # %1 is the full path of the right-clicked PDF.
+    # %1 is the full path of the right-clicked PDF. -File (not -Command) is
+    # deliberate: Windows hands "%1" through as a single argument whatever it
+    # contains, so apostrophes and $ in a file name stay literal.
     return "`"$psExe`" -NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`" -Pdf `"%1`" $Tail"
 }
 
