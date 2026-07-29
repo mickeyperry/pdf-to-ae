@@ -119,33 +119,33 @@ function Test-SamePath {
     return ((& $norm $A) -eq (& $norm $B))
 }
 
-# Copy a local checkout into the per-user install folder. The registry stores an
-# absolute path to the worker, so registering it where it was unzipped (Downloads,
-# a USB stick, a network share) means the menu breaks silently the day that folder
-# moves. Installing from a fixed location under LOCALAPPDATA removes that whole
-# class of failure.
-function Copy-RepoLocal {
+# Empty the install folder but keep a Poppler we downloaded into it - that copy is
+# 50-odd MB and re-fetching it on every re-install would be rude.
+function Clear-InstallDir {
+    param([string] $Destination)
+
+    if (-not (Test-Path -LiteralPath $Destination)) {
+        [System.IO.Directory]::CreateDirectory($Destination) | Out-Null
+        return
+    }
+    Get-ChildItem -LiteralPath $Destination -Force |
+        Where-Object { $_.Name -ne 'poppler' } |
+        ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force }
+}
+
+# Populate the install folder from a folder of files, keeping any Poppler already
+# there. The registry stores an absolute path to the worker, so registering it
+# where it was unzipped (Downloads, a USB stick, a network share) means the menu
+# breaks silently the day that folder moves. Installing from a fixed location
+# under LOCALAPPDATA removes that whole class of failure.
+function Copy-RepoInto {
     param([string] $Source, [string] $Destination)
 
-    Write-Step "Copying to $Destination..."
-
-    if (Test-Path -LiteralPath $Destination) {
-        # Keep a downloaded Poppler: it lives under the install folder and is big.
-        $keep = Join-Path $Destination 'poppler'
-        $stash = $null
-        if (Test-Path -LiteralPath $keep) {
-            $stash = Join-Path ([System.IO.Path]::GetTempPath()) ("poppler_keep_" + [Guid]::NewGuid().ToString('N'))
-            Move-Item -LiteralPath $keep -Destination $stash -Force
-        }
-        Remove-Item -LiteralPath $Destination -Recurse -Force
-        [System.IO.Directory]::CreateDirectory($Destination) | Out-Null
-        if ($stash) { Move-Item -LiteralPath $stash -Destination $keep -Force }
-    } else {
-        [System.IO.Directory]::CreateDirectory($Destination) | Out-Null
-    }
+    [System.IO.Directory]::CreateDirectory((Split-Path -Parent $Destination)) | Out-Null
+    Clear-InstallDir -Destination $Destination
 
     Get-ChildItem -LiteralPath $Source -Force |
-        Where-Object { $_.Name -notin @('.git', '.github') } |
+        Where-Object { $_.Name -notin @('.git', '.github', 'poppler') } |
         ForEach-Object {
             Copy-Item -LiteralPath $_.FullName -Destination $Destination -Recurse -Force
         }
@@ -176,14 +176,7 @@ function Get-RepoFromWeb {
         $inner = Get-ChildItem -LiteralPath $tmp -Directory | Select-Object -First 1
         if (-not $inner) { throw 'Downloaded archive looked empty.' }
 
-        if (Test-Path -LiteralPath $Destination) {
-            Remove-Item -LiteralPath $Destination -Recurse -Force
-        }
-        [System.IO.Directory]::CreateDirectory((Split-Path -Parent $Destination)) | Out-Null
-        Move-Item -LiteralPath $inner.FullName -Destination $Destination -Force
-
-        Write-Ok "Installed to $Destination"
-        return $Destination
+        return (Copy-RepoInto -Source $inner.FullName -Destination $Destination)
     }
     finally {
         Remove-Item -LiteralPath $zipPath -Force -ErrorAction SilentlyContinue
@@ -202,7 +195,8 @@ try {
             Write-Ok "Using the copy in $local"
             $root = $local
         } else {
-            $root = Copy-RepoLocal -Source $local -Destination $InstallDir
+            Write-Step "Copying to $InstallDir..."
+            $root = Copy-RepoInto -Source $local -Destination $InstallDir
         }
     } else {
         $root = Get-RepoFromWeb -Destination $InstallDir
