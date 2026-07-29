@@ -1,0 +1,16 @@
+# Windows
+Thumbs.db
+desktop.ini
+$RECYCLE.BIN/
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# Local scratch / test output
+scratch/
+*_png*/
+*_jpg*/
+*_pdfpages/
+*.pdf
